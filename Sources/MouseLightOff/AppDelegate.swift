@@ -1,6 +1,7 @@
 import AppKit
 import IOKit.hid
 import MouseLighting
+import OSLog
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let controller = MouseLightingController()
@@ -13,10 +14,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var autoOffButton: NSButton!
     private var commandButtons: [NSButton] = []
     private var commandMenuItems: [NSMenuItem] = []
-    private var wakeObserver: NSObjectProtocol?
-    private var refreshWorkItem: DispatchWorkItem?
-    private var refreshPending = false
-    private var isBusy = false
+    private let recoveryMonitor = RecoveryEventMonitor()
+    private let logger = Logger(subsystem: "com.foxode.mouselightoff.app", category: "AutoOff")
+    private lazy var recovery = AutoOffCoordinator(
+        enabled: UserDefaults.standard.bool(forKey: autoOffKey)
+    ) { [weak self] operation, token, completion in
+        guard let self else { return }
+        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
+            completion(.failure(MouseLightingError.permissionRequired))
+            return
+        }
+        self.worker.async {
+            let result = Result {
+                guard !token.isCancelled else { throw CancellationError() }
+                switch operation {
+                case .off:
+                    return try self.controller.setLighting(.off, shouldContinue: { !token.isCancelled })
+                case .white:
+                    return try self.controller.setLighting(.white, shouldContinue: { !token.isCancelled })
+                case .inspect:
+                    return try self.controller.inspect(shouldContinue: { !token.isCancelled })
+                }
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if UserDefaults.standard.object(forKey: autoOffKey) == nil,
@@ -28,20 +50,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenu()
         setupWindow()
         showWindow()
-        monitor.onChange = { [weak self] in self?.scheduleRefresh() }
+        recovery.onStatus = { [weak self] text in self?.statusView.string = text }
+        recovery.onDiagnostic = { [weak self] entry in
+            self?.logger.info(
+                "reason=\(entry.reason, privacy: .public) attempt=\(entry.attempt) result=\(entry.result, privacy: .public)"
+            )
+        }
+        recoveryMonitor.onEvent = { [weak self] event in self?.recovery.handle(event) }
+        recoveryMonitor.start()
+        monitor.onChange = { [weak self] in self?.recovery.handle(.deviceChanged) }
         monitor.start()
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.scheduleRefresh() }
-        scheduleRefresh()
+        recovery.handle(.launch)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        refreshWorkItem?.cancel()
+        recovery.stop()
+        recoveryMonitor.stop()
         monitor.stop()
-        if let wakeObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
-        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -125,10 +150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         commands.spacing = 10
 
         autoOffButton = NSButton(
-            checkboxWithTitle: "起動時・再接続時に消灯", target: self, action: #selector(toggleAutoOff)
+            checkboxWithTitle: "起動時・再接続・復帰時に自動消灯", target: self, action: #selector(toggleAutoOff)
         )
         autoOffButton.state = UserDefaults.standard.bool(forKey: autoOffKey) ? .on : .off
-        let automaticNote = label("有効にすると、アプリ起動中はスリープ復帰時も消灯します。")
+        let automaticNote = label("復帰・ロック解除後、間隔をあけて最大5回まで再適用します。")
         automaticNote.font = .systemFont(ofSize: 11)
         automaticNote.textColor = .secondaryLabelColor
 
@@ -144,7 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         permissionButtons.orientation = .horizontal
         permissionButtons.spacing = 10
 
-        let caveat = label("USB を抜くと照明が戻る場合があります。自動消灯はアプリ起動中に動作します。")
+        let caveat = label("手動で点灯すると再適用を中止します。次の復帰・再接続時は再び自動消灯します。")
         caveat.font = .systemFont(ofSize: 11)
         caveat.textColor = .secondaryLabelColor
 
@@ -201,19 +226,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func turnOff() {
-        perform("消灯を要求しています…") { try $0.setLighting(.off) }
+        recovery.performManual(.off)
     }
 
     @objc private func turnWhite() {
-        perform("白色点灯を要求しています…") { try $0.setLighting(.white) }
+        recovery.performManual(.white)
     }
 
     @objc private func reconnect() {
-        perform("接続を確認しています…") { try $0.inspect() }
+        recovery.performManual(.inspect)
     }
 
     @objc private func toggleAutoOff() {
-        UserDefaults.standard.set(autoOffButton.state == .on, forKey: autoOffKey)
+        let enabled = autoOffButton.state == .on
+        UserDefaults.standard.set(enabled, forKey: autoOffKey)
+        recovery.setEnabled(enabled)
     }
 
     @objc private func requestPermission() {
@@ -242,53 +269,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.terminate(nil)
     }
 
-    private func scheduleRefresh() {
-        refreshWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            if self.isBusy {
-                self.refreshPending = true
-            } else if UserDefaults.standard.bool(forKey: self.autoOffKey) {
-                self.turnOff()
-            } else {
-                self.reconnect()
-            }
-        }
-        refreshWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
-    }
-
-    private func perform(_ message: String, operation: @escaping (MouseLightingController) throws -> String) {
-        guard !isBusy else { return }
-        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else {
-            statusView.string = "入力監視の許可が必要です。下の「アクセス許可を要求」から許可してください。"
-            return
-        }
-        isBusy = true
-        setCommandsEnabled(false)
-        statusView.string = message
-        worker.async { [weak self] in
-            guard let self else { return }
-            let result = Result { try operation(self.controller) }
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let message):
-                    self.statusView.string = message
-                case .failure(let error):
-                    self.statusView.string = error.localizedDescription
-                }
-                self.isBusy = false
-                self.setCommandsEnabled(true)
-                if self.refreshPending {
-                    self.refreshPending = false
-                    self.scheduleRefresh()
-                }
-            }
-        }
-    }
-
-    private func setCommandsEnabled(_ enabled: Bool) {
-        commandButtons.forEach { $0.isEnabled = enabled }
-        commandMenuItems.forEach { $0.isEnabled = enabled }
-    }
 }

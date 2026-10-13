@@ -5,17 +5,17 @@ import IOKit.hid
 public final class MouseLightingController {
     public init() {}
 
-    public func inspect() throws -> String {
-        try operate { _, capabilities in
+    public func inspect(shouldContinue: () -> Bool = { true }) throws -> String {
+        try operate(shouldContinue: shouldContinue) { _, capabilities in
             String(
                 format: "照明%dゾーンを確認しました（0x8070 / index 0x%02x）。",
                 capabilities.zones.count, capabilities.feature)
         }
     }
 
-    public func setLighting(_ mode: LightingMode) throws -> String {
-        try operate { commands, capabilities in
-            let count = try commands.apply(mode, capabilities: capabilities)
+    public func setLighting(_ mode: LightingMode, shouldContinue: () -> Bool = { true }) throws -> String {
+        try operate(shouldContinue: shouldContinue) { commands, capabilities in
+            let count = try commands.apply(mode, capabilities: capabilities, shouldContinue: shouldContinue)
             return mode == .off
                 ? "照明\(count)ゾーンの消灯命令に応答がありました。"
                 : "照明\(count)ゾーンの白色点灯命令に応答がありました。"
@@ -23,13 +23,17 @@ public final class MouseLightingController {
     }
 
     private func operate(
+        shouldContinue: () -> Bool = { true },
         _ operation: (LightingCommands, LightingCapabilities) throws -> String
     ) throws -> String {
+        guard shouldContinue() else { throw CancellationError() }
         let devices = connectedMice()
         return try MouseBatch.perform(devices, name: { $0.name }) { mouse in
+            guard shouldContinue() else { throw CancellationError() }
             // Alternate interfaces are tried using only read-only discovery requests.
             // Once lighting changes begin, failures never cause a retry on another interface.
-            let (session, commands, capabilities) = try mouse.openLightingSession()
+            let (session, commands, capabilities) = try mouse.openLightingSession(
+                shouldContinue: shouldContinue)
             return try withExtendedLifetime(session) { try operation(commands, capabilities) }
         }
     }
@@ -75,13 +79,16 @@ private struct ConnectedMouse {
     let name: String
     let interfaces: [IOHIDDevice]
 
-    func openLightingSession() throws -> (HIDSession, LightingCommands, LightingCapabilities) {
+    func openLightingSession(shouldContinue: () -> Bool) throws -> (
+        HIDSession, LightingCommands, LightingCapabilities
+    ) {
         var lastError: Error = MouseLightingError.notConnected
         for interface in interfaces {
+            guard shouldContinue() else { throw CancellationError() }
             do {
                 let session = try HIDSession(device: interface)
                 let commands = LightingCommands(exchange: session.exchange)
-                let capabilities = try commands.inspect()
+                let capabilities = try commands.inspect(shouldContinue: shouldContinue)
                 return (session, commands, capabilities)
             } catch {
                 lastError = error

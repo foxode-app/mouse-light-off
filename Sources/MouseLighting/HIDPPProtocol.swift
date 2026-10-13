@@ -145,21 +145,25 @@ final class LightingCommands {
         return tag
     }
 
-    func inspect() throws -> LightingCapabilities {
-        let reply = try exchange(HIDPP.featureQuery(0x8070, tag: nextTag()))
+    func inspect(shouldContinue: () -> Bool = { true }) throws -> LightingCapabilities {
+        func query(_ request: [UInt8]) throws -> [UInt8] {
+            guard shouldContinue() else { throw CancellationError() }
+            return try exchange(request)
+        }
+        let reply = try query(HIDPP.featureQuery(0x8070, tag: nextTag()))
         guard let feature = reply.first, feature != 0 else {
             throw MouseLightingError.unsupported("HID++ 0x8070がありません。")
         }
-        let info = try exchange(HIDPP.lightingInfo(feature: feature, tag: nextTag()))
+        let info = try query(HIDPP.lightingInfo(feature: feature, tag: nextTag()))
         let count = try HIDPP.zoneCount(info)
         var zones: [LightingZone] = []
         for zone in 0..<count {
-            let zoneInfo = try exchange(HIDPP.zoneInfo(feature: feature, zone: zone, tag: nextTag()))
+            let zoneInfo = try query(HIDPP.zoneInfo(feature: feature, zone: zone, tag: nextTag()))
             let effects = try HIDPP.effectCount(zoneInfo, zone: zone)
             var off: UInt8?
             var white: UInt8?
             for effect in 0..<effects {
-                let effectInfo = try exchange(
+                let effectInfo = try query(
                     HIDPP.effectInfo(feature: feature, zone: zone, effect: effect, tag: nextTag()))
                 switch try HIDPP.effectID(effectInfo, zone: zone, effect: effect) {
                 case 0x0000: off = effect
@@ -176,7 +180,10 @@ final class LightingCommands {
         return LightingCapabilities(feature: feature, zones: zones)
     }
 
-    func apply(_ mode: LightingMode, capabilities: LightingCapabilities) throws -> Int {
+    func apply(
+        _ mode: LightingMode, capabilities: LightingCapabilities,
+        shouldContinue: () -> Bool = { true }
+    ) throws -> Int {
         // Validate every target zone before the first state-changing command.
         let effects = try capabilities.zones.map { zone -> UInt8 in
             if mode == .off { return zone.offEffect }
@@ -185,8 +192,10 @@ final class LightingCommands {
             }
             return effect
         }
+        guard shouldContinue() else { throw CancellationError() }
         _ = try exchange(HIDPP.temporaryControl(feature: capabilities.feature, tag: nextTag()))
         for (zone, effect) in zip(capabilities.zones, effects) {
+            guard shouldContinue() else { throw CancellationError() }
             _ = try exchange(
                 HIDPP.lighting(
                     feature: capabilities.feature, zone: zone.index, effect: effect,

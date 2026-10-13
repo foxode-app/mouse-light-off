@@ -84,6 +84,42 @@ final class LightingCommandsTests: XCTestCase {
         XCTAssertEqual(mouse.writes.dropFirst().map { $0[4] }, [0, 1])
     }
 
+    func testCancellationBeforeSoftwareControlPreventsEveryWrite() throws {
+        let mouse = MockMouse(effects: [[0, 1], [0, 1]])
+        let commands = mouse.commands
+        let capabilities = try commands.inspect()
+        XCTAssertThrowsError(try commands.apply(.off, capabilities: capabilities, shouldContinue: { false }))
+        {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertTrue(mouse.writes.isEmpty)
+    }
+
+    func testCancellationBetweenZoneCommandsStopsRemainingWrites() throws {
+        let mouse = MockMouse(effects: [[0, 1], [0, 1], [0, 1]])
+        let commands = mouse.commands
+        let capabilities = try commands.inspect()
+        // Complete software control and zone 0; cancellation blocks zone 1 and 2.
+        XCTAssertThrowsError(
+            try commands.apply(
+                .off, capabilities: capabilities,
+                shouldContinue: { mouse.writes.count < 2 })
+        ) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertEqual(mouse.writes.map { $0[3] >> 4 }, [8, 3])
+        XCTAssertEqual(mouse.writes.last?[4], 0)
+    }
+
+    func testCancellationDuringDiscoveryStopsFurtherQueriesWithoutWrites() {
+        let mouse = MockMouse(effects: [[0, 1], [0, 1]])
+        XCTAssertThrowsError(try mouse.commands.inspect(shouldContinue: { mouse.requests.count < 2 })) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertEqual(mouse.requests.count, 2)
+        XCTAssertTrue(mouse.writes.isEmpty)
+    }
+
     func testG403OffCommandRetainsKnownWorkingPackets() throws {
         let mouse = MockMouse(effects: [[0, 1], [0, 1]])
         let commands = mouse.commands
