@@ -2,7 +2,7 @@
 
 対応するロジクール製マウスの装飾ライトをまとめて消灯する、macOSメニューバーアプリです。0.3.0では、放置中の再点灯に対応するため、G403 HEROの本体に消灯設定を保存する操作を追加しました。Swift / AppKit / IOKitだけで動作し、G HUB・OpenRGB・Homebrew・外部ライブラリは不要です。
 
-[ダウンロード](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.3.0) · [製品ページ](https://foxode.com/products/mouse-light-off/) · [不具合報告](https://github.com/foxode-app/mouse-light-off/issues)
+[ダウンロード](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.3.1) · [製品ページ](https://foxode.com/products/mouse-light-off/) · [不具合報告](https://github.com/foxode-app/mouse-light-off/issues)
 
 ## 対応対象
 
@@ -29,7 +29,7 @@
 
 ## ダウンロード版のインストール
 
-1. [GitHub Releases](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.3.0)から `Mouse-Light-Off-0.3.0-arm64.dmg` をダウンロードして開き、`Mouse Light Off.app` を「アプリケーション」にコピーします。GitHubが自動生成する「Source code」は開発用のソースです。
+1. [GitHub Releases](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.3.1)から `Mouse-Light-Off-0.3.1-arm64.dmg` をダウンロードして開き、`Mouse Light Off.app` を「アプリケーション」にコピーします。GitHubが自動生成する「Source code」は開発用のソースです。
 2. コピーしたアプリを開き、設定画面の「アクセス許可を要求」を押します。
 3. 「システム設定 → プライバシーとセキュリティ → 入力監視」で **Mouse Light Off** を許可します。表示されない場合は「＋」で「アプリケーション」内のアプリを追加します。
 4. アプリを終了して開き直し、「接続を確認」で認識状態を確認します。その後「すべて消灯」を押します。
@@ -86,6 +86,8 @@ codesign --display --verbose=4 'build/Mouse Light Off.app'
 自動消灯をオフにすると予約済みの再適用を取り消します。本体・画面のスリープ、画面ロック、セッション離脱、アプリ終了時も予約を取り消し、進行中の消灯は通信命令の区切りで停止します。「すべて点灯（白）」も保留中の自動消灯を取り消し、直後に予約処理で消されることを防ぎます。自動消灯の設定自体は維持するため、次の復帰や再接続では自動消灯が再開します。
 
 この自動消灯は一時的なRAM設定です。スリープ中やログアウト中にアプリが動作できない場合、マウス側で点灯すること自体は防げません。通信が利用できる復帰後に再消灯します。放置中の再点灯に対応するG403 HEROの本体保存は、次の独立した手動操作で行います。Macのスリープ・ロック設定は変更しません。
+
+メニューバーのメニューと設定画面の「開発者のサイト（Foxodeについて）」から、このアプリの[Foxode製品ページ](https://foxode.com/products/mouse-light-off/)を開けます。
 
 ## G403 HEROの本体に消灯を保存
 

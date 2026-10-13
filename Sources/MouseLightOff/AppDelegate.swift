@@ -123,6 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             addMenuItem("本体の照明設定を確認", action: #selector(inspectOnboard), to: menu),
         ]
         menu.addItem(.separator())
+        addMenuItem("開発者のサイト（Foxodeについて）", action: #selector(openProductPage), to: menu)
+        menu.addItem(.separator())
         addMenuItem("Mouse Light Offを終了", action: #selector(quit), to: menu, key: "q")
         menu.autoenablesItems = false
         statusItem.menu = menu
@@ -221,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "一時消灯はUSB有線の8機種が対象です。本体への保存はG403 HEROのみ対応し、他の7機種は一時消灯の実験対応です。")
         supportedNote.font = .systemFont(ofSize: 11)
         supportedNote.textColor = .secondaryLabelColor
-        let productButton = button("対応機種と使い方", action: #selector(openProductPage))
+        let productButton = button("開発者のサイト（Foxodeについて）", action: #selector(openProductPage))
         let residentNote = label("設定画面を閉じてもメニューバーに常駐します。終了するには「アプリを終了」を押してください。")
         residentNote.font = .systemFont(ofSize: 11)
         residentNote.textColor = .secondaryLabelColor
