@@ -49,14 +49,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     private func setupMenu() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "computer.mouse", accessibilityDescription: "Mouse Light Off")
-            button.toolTip = "Mouse Light Off"
-        }
+        statusItem = MenuBarIcon.makeStatusItem()
         let menu = NSMenu()
+        let title = NSMenuItem(title: "Mouse Light Off", action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        menu.addItem(title)
+        menu.addItem(.separator())
         addMenuItem("設定を開く…", action: #selector(showWindow), to: menu)
         menu.addItem(.separator())
         commandMenuItems = [
@@ -65,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             addMenuItem("接続を確認", action: #selector(reconnect), to: menu),
         ]
         menu.addItem(.separator())
-        addMenuItem("終了", action: #selector(quit), to: menu, key: "q")
+        addMenuItem("Mouse Light Offを終了", action: #selector(quit), to: menu, key: "q")
         menu.autoenablesItems = false
         statusItem.menu = menu
     }
@@ -82,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 590),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false
         )
         window.title = "Mouse Light Off"
@@ -150,10 +153,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         supportedNote.font = .systemFont(ofSize: 11)
         supportedNote.textColor = .secondaryLabelColor
         let productButton = button("対応機種と使い方", action: #selector(openProductPage))
+        let residentNote = label("設定画面を閉じてもメニューバーに常駐します。終了するには「アプリを終了」を押してください。")
+        residentNote.font = .systemFont(ofSize: 11)
+        residentNote.textColor = .secondaryLabelColor
+        let footerButtons = NSStackView(views: [
+            productButton, button("アプリを終了", action: #selector(quit)),
+        ])
+        footerButtons.orientation = .horizontal
+        footerButtons.spacing = 10
 
         let stack = NSStackView(views: [
             title, subtitle, statusScroll, commands, autoOffButton, automaticNote,
-            permissionNote, permissionButtons, caveat, supportedNote, productButton,
+            permissionNote, permissionButtons, caveat, supportedNote, residentNote, footerButtons,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -167,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
         ])
         statusScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        for text in [subtitle, automaticNote, permissionNote, caveat, supportedNote] {
+        for text in [subtitle, automaticNote, permissionNote, caveat, supportedNote, residentNote] {
             text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
     }

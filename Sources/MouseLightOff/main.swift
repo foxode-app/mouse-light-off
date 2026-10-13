@@ -39,5 +39,8 @@ if !arguments.isEmpty {
     let delegate = AppDelegate()
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
-    app.run()
+    // NSApplication's delegate reference is weak; keep the menu owner alive for the run loop.
+    withExtendedLifetime(delegate) {
+        app.run()
+    }
 }

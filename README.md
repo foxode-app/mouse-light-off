@@ -2,7 +2,7 @@
 
 対応するロジクール製マウスの装飾ライトをまとめて消灯する、macOSメニューバーアプリです。Swift / AppKit / IOKitだけで動作し、G HUB・OpenRGB・Homebrew・外部ライブラリは不要です。
 
-[ダウンロード](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.2.0) · [製品ページ](https://foxode.com/products/mouse-light-off/) · [不具合報告](https://github.com/foxode-app/mouse-light-off/issues)
+[ダウンロード](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.2.1) · [製品ページ](https://foxode.com/products/mouse-light-off/) · [不具合報告](https://github.com/foxode-app/mouse-light-off/issues)
 
 ## 対応対象
 
@@ -29,14 +29,16 @@ USB有線接続の次の8機種を対象にしています。接続時に照明�
 
 ## ダウンロード版のインストール
 
-1. [GitHub Releases](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.2.0)から `Mouse-Light-Off-0.2.0-arm64.dmg` をダウンロードして開き、`Mouse Light Off.app` を「アプリケーション」にコピーします。GitHubが自動生成する「Source code」は開発用のソースです。
+1. [GitHub Releases](https://github.com/foxode-app/mouse-light-off/releases/tag/v0.2.1)から `Mouse-Light-Off-0.2.1-arm64.dmg` をダウンロードして開き、`Mouse Light Off.app` を「アプリケーション」にコピーします。GitHubが自動生成する「Source code」は開発用のソースです。
 2. コピーしたアプリを開き、設定画面の「アクセス許可を要求」を押します。
 3. 「システム設定 → プライバシーとセキュリティ → 入力監視」で **Mouse Light Off** を許可します。表示されない場合は「＋」で「アプリケーション」内のアプリを追加します。
 4. アプリを終了して開き直し、「接続を確認」で認識状態を確認します。その後「すべて消灯」を押します。
 
-Dockには常駐せず、メニューバーのマウスのアイコンから設定を開けます。macOSの確認画面の文言はOSのバージョンによって異なります。アクセシビリティ・フルディスクアクセスの許可は不要です。Developer IDで署名・公証された配布版でも入力監視の許可は必要です。
+起動中はメニューバーにマウスのアイコンを表示します。設定画面を閉じても常駐し、アイコンから設定を開き直せます。終了するにはメニューの「Mouse Light Offを終了」、または設定画面の「アプリを終了」を押してください。Dockには常駐しません。
 
-更新時はメニューバーからアプリを終了し、「アプリケーション」の既存アプリを置き換えます。自動更新機能はありません。アドホック署名の開発版から初めて配布版に移行する際は、入力監視の項目を削除して追加し直す必要がある場合があります。
+macOSの確認画面の文言はOSのバージョンによって異なります。アクセシビリティ・フルディスクアクセスの許可は不要です。Developer IDで署名・公証された配布版でも入力監視の許可は必要です。
+
+更新時はアプリを終了し、「アプリケーション」の既存アプリを置き換えます。0.2.0以前でアイコンが見えない場合は、アクティビティモニタで `Mouse Light Off` を検索して終了してください。0.2.1でメニューバーのアイコンが表示されない不具合を修正しています。自動更新機能はありません。アドホック署名の開発版から初めて配布版に移行する際は、入力監視の項目を削除して追加し直す必要がある場合があります。
 
 ## ローカルビルドと起動
 
@@ -94,7 +96,7 @@ make lint
 make app
 ```
 
-`Sources/MouseLighting/` は対応表・USB通信・HID++パケット、`Sources/MouseLightOff/` は画面と接続通知、`Tests/MouseLightingTests/` はパケット・能力照会・複数機器処理の検証、`Resources/` はアプリ情報とアイコン、`scripts/` はビルド用です。外部依存がないため依存関係ロックファイルは生成されません。Swift標準formatterを使います。
+`Sources/MouseLighting/` は対応表・USB通信・HID++パケット、`Sources/MouseLightOff/` は画面と接続通知、`Tests/MouseLightingTests/` はパケット・能力照会・複数機器処理の検証、`Tests/MouseLightOffTests/` はメニューバー画像の描画検証、`Resources/` はアプリ情報とアイコン、`scripts/` はビルド用です。外部依存がないため依存関係ロックファイルは生成されません。Swift標準formatterを使います。
 
 アプリアイコンは `scripts/create-icon.swift` がAppKitの図形描画で生成したものです。通常のビルドでは同梱の `Resources/MouseLightOff.icns` を使います。PNGを再生成する場合は次のコマンドを使ってください。
 
@@ -117,7 +119,7 @@ mkdir -p build
 ## 検証結果（2026-10-13）
 
 - G403専用版での消灯をユーザーが実機確認済み。
-- 汎用版は22件の自動テスト成功。1〜3ゾーン、動的な効果番号、非対応時の書き込み防止、RAMのみへの適用、不正応答・機器エラー、複数マウスとインターフェース重複排除を検証。
+- 汎用版は24件の自動テスト成功。1〜3ゾーン、動的な効果番号、非対応時の書き込み防止、RAMのみへの適用、不正応答・機器エラー、複数マウスとインターフェース重複排除を検証。メニューバー画像はSF Symbolsの解決・描画と、シンボルが使えない場合の代替描画を検証。
 - `make lint`、Releaseビルド、アドホック署名検証成功。
 - 新しい汎用版の実機消灯・白色点灯・USB再接続・スリープ復帰、G403以外の実機、macOS 13実機は未検証。
 

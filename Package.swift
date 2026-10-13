@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "MouseLighting"),
         .executableTarget(name: "MouseLightOff", dependencies: ["MouseLighting"]),
         .testTarget(name: "MouseLightingTests", dependencies: ["MouseLighting"]),
+        .testTarget(name: "MouseLightOffTests", dependencies: ["MouseLightOff"]),
     ],
     swiftLanguageVersions: [.v5]
 )
