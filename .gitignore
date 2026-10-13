@@ -1,0 +1,23 @@
+.build/
+.swiftpm/
+build/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# Local release artifacts and signing credentials are never source files.
+.releases/
+*.app/
+*.dmg
+*.zip
+*.p8
+*.p12
+*.pfx
+*.pem
+*.key
+*.cer
+*.certSigningRequest
