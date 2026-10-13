@@ -140,6 +140,119 @@ final class AutoOffCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.executor.calls.map(\.operation), [.white])
     }
 
+    func testOnboardWritesRunOnceWithoutAutomaticPersistentRetries() {
+        for operation: LightingOperation in [.saveOnboardOff, .restoreOnboardLighting] {
+            for fails in [false, true] {
+                let fixture = Fixture()
+                fixture.coordinator.handle(.systemWake)
+                fixture.coordinator.performManual(operation)
+                XCTAssertTrue(fixture.coordinator.isWritingOnboard)
+                fixture.executor.completeLast(fails ? .failure(Failure.unavailable) : .success("saved"))
+                fixture.clock.advance(to: 1000)
+                fixture.clock.fireCancelledTasks()
+                XCTAssertEqual(fixture.executor.calls.map(\.operation), [operation])
+                XCTAssertEqual(fixture.onboardWriteStates, [true, false])
+                XCTAssertFalse(fixture.coordinator.isWritingOnboard)
+                fixture.coordinator.handle(.screenUnlocked)
+                fixture.clock.advance(to: 1000.5)
+                XCTAssertEqual(fixture.executor.calls.map(\.operation), [operation, .off])
+            }
+        }
+    }
+
+    func testPendingOnboardWriteCanBeCancelledBeforeItStarts() {
+        for operation: LightingOperation in [.saveOnboardOff, .restoreOnboardLighting] {
+            let fixture = Fixture()
+            fixture.coordinator.performManual(.inspect)
+            fixture.coordinator.performManual(operation)
+            XCTAssertTrue(fixture.executor.calls[0].token.isCancelled)
+            XCTAssertFalse(fixture.coordinator.isWritingOnboard)
+            fixture.coordinator.performManual(.white)
+            fixture.executor.completeLast(.success("stale inspect"))
+            XCTAssertEqual(fixture.executor.calls.map(\.operation), [.inspect, .white])
+            fixture.executor.completeLast(.success("white"))
+            fixture.clock.advance(to: 100)
+            XCTAssertTrue(fixture.onboardWriteStates.isEmpty)
+            XCTAssertEqual(fixture.status.last, "white")
+        }
+    }
+
+    func testOnboardWriteWaitsForExistingHIDOperationBeforeProtectingItself() {
+        let fixture = Fixture()
+        fixture.coordinator.performManual(.off)
+        fixture.coordinator.performManual(.saveOnboardOff)
+        XCTAssertEqual(fixture.executor.calls.count, 1)
+        XCTAssertTrue(fixture.onboardWriteStates.isEmpty)
+        fixture.executor.completeLast(.success("stale off"))
+        XCTAssertEqual(fixture.executor.calls.map(\.operation), [.off, .saveOnboardOff])
+        XCTAssertEqual(fixture.onboardWriteStates, [true])
+        fixture.executor.completeLast(.success("saved"))
+        XCTAssertEqual(fixture.onboardWriteStates, [true, false])
+        XCTAssertEqual(fixture.status.last, "saved")
+    }
+
+    func testActiveOnboardWriteIsNotInterruptedByRecoveryOrManualChanges() {
+        for operation: LightingOperation in [.saveOnboardOff, .restoreOnboardLighting] {
+            let fixture = Fixture()
+            fixture.coordinator.performManual(operation)
+            fixture.coordinator.handle(.screensSleep)
+            fixture.coordinator.handle(.screenLocked)
+            fixture.coordinator.handle(.screenUnlocked)
+            fixture.coordinator.handle(.deviceChanged)
+            fixture.coordinator.performManual(.white)
+            fixture.coordinator.performManual(.saveOnboardOff)
+            fixture.coordinator.setEnabled(false)
+            fixture.clock.advance(to: 100)
+            XCTAssertEqual(fixture.executor.calls.map(\.operation), [operation])
+            XCTAssertFalse(fixture.executor.calls[0].token.isCancelled)
+            XCTAssertTrue(fixture.coordinator.isEnabled)
+            fixture.executor.completeLast(.success("saved"))
+            XCTAssertEqual(fixture.onboardWriteStates, [true, false])
+            XCTAssertEqual(fixture.status.last, "saved")
+            fixture.clock.advance(to: 1000)
+            XCTAssertEqual(fixture.executor.calls.count, 1)
+        }
+    }
+
+    func testStopCancelsPendingOnboardWriteButLetsActiveWriteComplete() {
+        let pending = Fixture()
+        pending.coordinator.performManual(.inspect)
+        pending.coordinator.performManual(.saveOnboardOff)
+        pending.coordinator.stop()
+        pending.executor.completeLast(.success("stale"))
+        XCTAssertEqual(pending.executor.calls.map(\.operation), [.inspect])
+        XCTAssertTrue(pending.onboardWriteStates.isEmpty)
+
+        for operation: LightingOperation in [.saveOnboardOff, .restoreOnboardLighting] {
+            let fixture = Fixture()
+            fixture.coordinator.performManual(operation)
+            fixture.coordinator.stop()
+            XCTAssertFalse(fixture.executor.calls[0].token.isCancelled)
+            XCTAssertTrue(fixture.coordinator.isWritingOnboard)
+            fixture.executor.completeLast(.success("saved before termination"))
+            XCTAssertEqual(fixture.onboardWriteStates, [true, false])
+            XCTAssertFalse(fixture.coordinator.isBusy)
+            XCTAssertEqual(fixture.status.last, "saved before termination")
+            fixture.coordinator.handle(.systemWake)
+            fixture.coordinator.performManual(.saveOnboardOff)
+            fixture.clock.advance(to: 100)
+            XCTAssertEqual(fixture.executor.calls.count, 1)
+        }
+    }
+
+    func testOnboardInspectionRemainsCancellableReadOnlyWork() {
+        let fixture = Fixture()
+        fixture.coordinator.performManual(.inspectOnboard)
+        XCTAssertFalse(fixture.coordinator.isWritingOnboard)
+        fixture.coordinator.performManual(.white)
+        XCTAssertTrue(fixture.executor.calls[0].token.isCancelled)
+        fixture.executor.completeLast(.success("stale inspection"))
+        XCTAssertEqual(fixture.executor.calls.map(\.operation), [.inspectOnboard, .white])
+        fixture.executor.completeLast(.success("white"))
+        XCTAssertTrue(fixture.onboardWriteStates.isEmpty)
+        XCTAssertEqual(fixture.status.last, "white")
+    }
+
     func testLateOldCompletionCannotOverwriteNewWindowOrStartOldAttempts() {
         let fixture = Fixture()
         fixture.coordinator.handle(.systemWake)
@@ -255,12 +368,14 @@ private final class Fixture {
     let coordinator: AutoOffCoordinator
     var status: [String] = []
     var diagnostics: [RecoveryDiagnostic] = []
+    var onboardWriteStates: [Bool] = []
 
     init(enabled: Bool = true) {
         coordinator = AutoOffCoordinator(
             enabled: enabled, schedule: clock.schedule, execute: executor.execute)
         coordinator.onStatus = { [weak self] in self?.status.append($0) }
         coordinator.onDiagnostic = { [weak self] in self?.diagnostics.append($0) }
+        coordinator.onOnboardWriteStateChanged = { [weak self] in self?.onboardWriteStates.append($0) }
     }
 }
 

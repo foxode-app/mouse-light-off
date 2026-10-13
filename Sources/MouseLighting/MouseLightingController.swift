@@ -1,5 +1,6 @@
 import Foundation
 import IOKit.hid
+import IOKit.pwr_mgt
 
 /// Each operation owns its HID connections. Invoke from a serial worker queue, not the UI thread.
 public final class MouseLightingController {
@@ -19,6 +20,99 @@ public final class MouseLightingController {
             return mode == .off
                 ? "照明\(count)ゾーンの消灯命令に応答がありました。"
                 : "照明\(count)ゾーンの白色点灯命令に応答がありました。"
+        }
+    }
+
+    public func inspectOnboardLighting() throws -> String {
+        try withG403OnboardSession { _, commands, _, _ in
+            let snapshot = try commands.inspect()
+            return snapshot.lightingIsOff
+                ? "G403 HERO: 本体に保存された2ゾーンの照明は消灯です。"
+                : "G403 HERO: 本体に点灯する照明設定が保存されています。"
+        }
+    }
+
+    public func saveOnboardOff(shouldContinue: () -> Bool = { true }) throws -> String {
+        try changeOnboardLighting(restoring: false, shouldContinue: shouldContinue)
+    }
+
+    public func restoreOnboardLighting(shouldContinue: () -> Bool = { true }) throws -> String {
+        try changeOnboardLighting(restoring: true, shouldContinue: shouldContinue)
+    }
+
+    private func changeOnboardLighting(
+        restoring: Bool, shouldContinue: () -> Bool
+    ) throws -> String {
+        guard shouldContinue() else { throw CancellationError() }
+        return try withG403OnboardSession { session, commands, capabilities, identity in
+            let store = try OnboardBackupStore(deviceIdentity: identity)
+            let lease = try store.acquireExclusiveAccess()
+            defer { lease.release() }
+            let snapshot = try commands.inspect()
+            let plan =
+                try restoring
+                ? snapshot.planRestoringLighting(from: store.loadForRestoration()) : snapshot.planOff()
+            guard shouldContinue() else { throw CancellationError() }
+            let runtime = OnboardRuntimeCommands(exchange: session.exchange)
+            let dpiBefore = try runtime.readDPI(onboardFeature: snapshot.feature)
+            try dpiBefore.validate(profile: snapshot.profile)
+            var assertion = IOPMAssertionID(0)
+            // Hold off automatic system sleep only for this short, non-cancellable flash transaction.
+            let powerResult = IOPMAssertionCreateWithName(
+                kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                "Saving Mouse Light Off lighting settings" as CFString, &assertion)
+            guard powerResult == kIOReturnSuccess else {
+                throw MouseLightingError.transport("本体保存の準備", powerResult)
+            }
+            defer { IOPMAssertionRelease(assertion) }
+            guard shouldContinue() else { throw CancellationError() }
+            let changed: Bool
+            do {
+                changed = try commands.apply(plan) { original in
+                    try store.save(original, forRestoration: !restoring)
+                    guard shouldContinue() else { throw CancellationError() }
+                }
+            } catch {
+                throw MouseLightingError.unsupported(
+                    "\(error.localizedDescription)\nバックアップ保存先: \(store.directory.path)")
+            }
+            do {
+                // After the first flash command, finish the write/readback even if the UI changes.
+                try runtime.preserveDPI(dpiBefore, onboardFeature: snapshot.feature)
+                if restoring {
+                    try runtime.releaseLighting(feature: capabilities.feature)
+                    return changed
+                        ? "G403 HERO: 保存前の照明を本体に戻し、読み直して一致を確認しました。"
+                        : "G403 HERO: 本体の照明はすでに保存前の設定です。"
+                }
+                let lighting = LightingCommands(exchange: session.exchange)
+                _ = try lighting.apply(.off, capabilities: capabilities)
+            } catch {
+                throw MouseLightingError.unsupported(
+                    "本体の保存内容は照合済みですが、現在の照明またはDPIの確認を完了できませんでした。\(error.localizedDescription)\nバックアップ保存先: \(store.directory.path)"
+                )
+            }
+            return changed
+                ? "G403 HERO: 本体に消灯を保存し、読み直して一致を確認しました。DPI・ボタン設定は維持しています。"
+                : "G403 HERO: 本体の照明はすでに消灯設定です。新たな書き込みは行っていません。"
+        }
+    }
+
+    private func withG403OnboardSession<T>(
+        _ operation: (HIDSession, OnboardLightingCommands, LightingCapabilities, String) throws -> T
+    ) throws -> T {
+        let mice = connectedMice().filter { $0.productID == 0xc08f }
+        guard mice.count == 1, let mouse = mice.first else {
+            throw MouseLightingError.unsupported("本体への照明保存には、G403 HEROを1台だけ接続してください。")
+        }
+        let (session, _, capabilities) = try mouse.openLightingSession(shouldContinue: { true })
+        guard capabilities.zones.count == 2 else {
+            throw MouseLightingError.unsupported("本体保存に対応する2ゾーン構成ではありません。")
+        }
+        return try withExtendedLifetime(session) {
+            try operation(
+                session, OnboardLightingCommands(exchange: session.exchange), capabilities, mouse.identity)
         }
     }
 
@@ -77,6 +171,8 @@ struct MouseInterface: Equatable {
 
 private struct ConnectedMouse {
     let name: String
+    let productID: Int
+    let identity: String
     let interfaces: [IOHIDDevice]
 
     func openLightingSession(shouldContinue: () -> Bool) throws -> (
@@ -140,10 +236,28 @@ private func connectedMice() -> [ConnectedMouse] {
         occurrences[model.productID, default: 0] += 1
         let hasDuplicates = groups.filter { $0[0].productID == model.productID }.count > 1
         let suffix = hasDuplicates ? " (\(occurrences[model.productID]!))" : ""
+        let serial = group.compactMap { handles[$0.interfaceID] }.compactMap {
+            IOHIDDeviceGetProperty($0, kIOHIDSerialNumberKey as CFString) as? String
+        }.first { !$0.isEmpty && Set($0).subtracting(["0", " "]).isEmpty == false }
         return ConnectedMouse(
             name: model.name + suffix,
+            productID: model.productID,
+            identity: serial.map { "serial:\($0)" } ?? "attachment:\(bootSessionID()):\(group[0].physicalID)",
             interfaces: group.compactMap { handles[$0.interfaceID] })
     }
+}
+
+private func bootSessionID() -> String {
+    var size = 0
+    guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 1 else {
+        // A process-local fallback intentionally refuses restoration from an older process.
+        return UUID().uuidString
+    }
+    var value = [CChar](repeating: 0, count: size)
+    guard sysctlbyname("kern.bootsessionuuid", &value, &size, nil, 0) == 0 else {
+        return UUID().uuidString
+    }
+    return String(cString: value)
 }
 
 /// All HID collections for one USB mouse share the same parent USB device entry.

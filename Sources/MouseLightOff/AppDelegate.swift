@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var autoOffButton: NSButton!
     private var commandButtons: [NSButton] = []
     private var commandMenuItems: [NSMenuItem] = []
+    private var terminationPending = false
     private let recoveryMonitor = RecoveryEventMonitor()
     private let logger = Logger(subsystem: "com.foxode.mouselightoff.app", category: "AutoOff")
     private lazy var recovery = AutoOffCoordinator(
@@ -34,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return try self.controller.setLighting(.white, shouldContinue: { !token.isCancelled })
                 case .inspect:
                     return try self.controller.inspect(shouldContinue: { !token.isCancelled })
+                case .inspectOnboard:
+                    return try self.controller.inspectOnboardLighting()
+                case .saveOnboardOff:
+                    return try self.controller.saveOnboardOff(shouldContinue: { !token.isCancelled })
+                case .restoreOnboardLighting:
+                    return try self.controller.restoreOnboardLighting(shouldContinue: { !token.isCancelled })
                 }
             }
             DispatchQueue.main.async { completion(result) }
@@ -55,6 +62,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.logger.info(
                 "reason=\(entry.reason, privacy: .public) attempt=\(entry.attempt) result=\(entry.result, privacy: .public)"
             )
+        }
+        recovery.onOnboardWriteStateChanged = { [weak self] isWriting in
+            guard let self else { return }
+            self.commandButtons.forEach { $0.isEnabled = !isWriting }
+            self.commandMenuItems.forEach { $0.isEnabled = !isWriting }
+            self.autoOffButton.isEnabled = !isWriting
+            if !isWriting, self.terminationPending {
+                self.terminationPending = false
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
         }
         recoveryMonitor.onEvent = { [weak self] event in self?.recovery.handle(event) }
         recoveryMonitor.start()
@@ -78,6 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard recovery.isWritingOnboard else { return .terminateNow }
+        terminationPending = true
+        statusView.string = "本体の照明設定を更新中です。完了後に終了します。マウスを抜かずにお待ちください。"
+        return .terminateLater
+    }
+
     private func setupMenu() {
         statusItem = MenuBarIcon.makeStatusItem()
         let menu = NSMenu()
@@ -91,6 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             addMenuItem("すべて消灯", action: #selector(turnOff), to: menu),
             addMenuItem("すべて点灯（白）", action: #selector(turnWhite), to: menu),
             addMenuItem("接続を確認", action: #selector(reconnect), to: menu),
+        ]
+        menu.addItem(.separator())
+        commandMenuItems += [
+            addMenuItem("本体に消灯を保存（G403 HERO）", action: #selector(saveOnboardOff), to: menu),
+            addMenuItem("保存前の照明に戻す", action: #selector(restoreOnboardLighting), to: menu),
+            addMenuItem("本体の照明設定を確認", action: #selector(inspectOnboard), to: menu),
         ]
         menu.addItem(.separator())
         addMenuItem("Mouse Light Offを終了", action: #selector(quit), to: menu, key: "q")
@@ -110,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupWindow() {
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 580, height: 720),
             styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false
         )
         window.title = "Mouse Light Off"
@@ -157,15 +187,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         automaticNote.font = .systemFont(ofSize: 11)
         automaticNote.textColor = .secondaryLabelColor
 
+        let onboardButtons = [
+            button("本体に消灯を保存（G403 HERO）", action: #selector(saveOnboardOff)),
+            button("保存前の照明に戻す", action: #selector(restoreOnboardLighting)),
+        ]
+        commandButtons += onboardButtons
+        let onboardCommands = NSStackView(views: onboardButtons)
+        onboardCommands.orientation = .horizontal
+        onboardCommands.spacing = 10
+        let onboardNote = label("放置中も消灯するため、本体の照明設定を保存します。DPI・ボタン設定は維持します。")
+        onboardNote.font = .systemFont(ofSize: 12)
+        onboardNote.textColor = .secondaryLabelColor
+
         let permissionNote = label(
             "初回は入力監視を許可し、アプリを開き直してください。マウス操作やキー入力の記録は行いません。"
         )
         permissionNote.font = .systemFont(ofSize: 12)
         permissionNote.textColor = .secondaryLabelColor
-        let permissionButtons = NSStackView(views: [
+        let permissionCommands = [
             button("アクセス許可を要求", action: #selector(requestPermission)),
             button("入力監視の設定を開く", action: #selector(openPermissionSettings)),
-        ])
+        ]
+        commandButtons += permissionCommands
+        let permissionButtons = NSStackView(views: permissionCommands)
         permissionButtons.orientation = .horizontal
         permissionButtons.spacing = 10
 
@@ -174,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         caveat.textColor = .secondaryLabelColor
 
         let supportedNote = label(
-            "USB有線の8機種が対象です。G403 HEROは旧版で消灯確認済み、他の7機種は実験対応です。")
+            "一時消灯はUSB有線の8機種が対象です。本体への保存はG403 HEROのみ対応し、他の7機種は一時消灯の実験対応です。")
         supportedNote.font = .systemFont(ofSize: 11)
         supportedNote.textColor = .secondaryLabelColor
         let productButton = button("対応機種と使い方", action: #selector(openProductPage))
@@ -189,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let stack = NSStackView(views: [
             title, subtitle, statusScroll, commands, autoOffButton, automaticNote,
+            onboardCommands, onboardNote,
             permissionNote, permissionButtons, caveat, supportedNote, residentNote, footerButtons,
         ])
         stack.orientation = .vertical
@@ -203,7 +248,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -24),
         ])
         statusScroll.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        for text in [subtitle, automaticNote, permissionNote, caveat, supportedNote, residentNote] {
+        for text in [
+            subtitle, automaticNote, onboardNote, permissionNote, caveat, supportedNote, residentNote,
+        ] {
             text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
     }
@@ -235,6 +282,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reconnect() {
         recovery.performManual(.inspect)
+    }
+
+    @objc private func inspectOnboard() {
+        recovery.performManual(.inspectOnboard)
+    }
+
+    @objc private func saveOnboardOff() {
+        recovery.performManual(.saveOnboardOff)
+    }
+
+    @objc private func restoreOnboardLighting() {
+        recovery.performManual(.restoreOnboardLighting)
     }
 
     @objc private func toggleAutoOff() {

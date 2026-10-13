@@ -41,6 +41,11 @@ enum RecoveryEvent: String {
 
 enum LightingOperation: String {
     case off, white, inspect
+    case inspectOnboard, saveOnboardOff, restoreOnboardLighting
+
+    var writesOnboard: Bool {
+        self == .saveOnboardOff || self == .restoreOnboardLighting
+    }
 }
 
 struct RecoveryDiagnostic {
@@ -60,8 +65,10 @@ final class AutoOffCoordinator {
 
     var onStatus: (String) -> Void = { _ in }
     var onDiagnostic: (RecoveryDiagnostic) -> Void = { _ in }
+    var onOnboardWriteStateChanged: (Bool) -> Void = { _ in }
     private(set) var isEnabled: Bool
     var isBusy: Bool { active != nil }
+    var isWritingOnboard: Bool { active?.operation.writesOnboard == true }
 
     private final class Request {
         let generation: UInt64
@@ -108,6 +115,16 @@ final class AutoOffCoordinator {
 
     func handle(_ event: RecoveryEvent) {
         guard !terminated else { return }
+        // A profile update must finish its write and readback before another operation runs.
+        // Recovery always uses RAM-only .off; it must never retry a persistent write.
+        if isWritingOnboard {
+            if event.suspendsRecovery {
+                suspended = true
+            } else if event != .deviceChanged {
+                suspended = false
+            }
+            return
+        }
         if event.suspendsRecovery {
             suspended = true
             cancel(reason: event.rawValue)
@@ -124,7 +141,7 @@ final class AutoOffCoordinator {
     }
 
     func setEnabled(_ enabled: Bool) {
-        guard !terminated, enabled != isEnabled else { return }
+        guard !terminated, !isWritingOnboard, enabled != isEnabled else { return }
         isEnabled = enabled
         if enabled {
             handle(.enabled)
@@ -135,7 +152,7 @@ final class AutoOffCoordinator {
     }
 
     func performManual(_ operation: LightingOperation) {
-        guard !terminated else { return }
+        guard !terminated, !isWritingOnboard else { return }
         cancel(reason: "manual_\(operation.rawValue)")
         pending = Request(
             generation: generation, operation: operation, attempt: 0,
@@ -185,7 +202,7 @@ final class AutoOffCoordinator {
         tasks.removeAll()
         pending?.token.cancel()
         pending = nil
-        active?.token.cancel()
+        if !isWritingOnboard { active?.token.cancel() }
         windowReasons.removeAll()
         finalAttemptDue = false
         onDiagnostic(.init(reason: reason, attempt: 0, result: "cancelled"))
@@ -195,18 +212,24 @@ final class AutoOffCoordinator {
         guard active == nil, let request = pending, !terminated else { return }
         pending = nil
         active = request
+        if request.operation.writesOnboard { onOnboardWriteStateChanged(true) }
         let text: String
         switch request.operation {
         case .off: text = "消灯を要求しています…"
         case .white: text = "白色点灯を要求しています…"
         case .inspect: text = "接続を確認しています…"
+        case .inspectOnboard: text = "本体の照明設定を確認しています…"
+        case .saveOnboardOff: text = "本体に消灯を保存しています。完了までマウスを抜かないでください…"
+        case .restoreOnboardLighting: text = "保存前の照明に戻しています。完了までマウスを抜かないでください…"
         }
         onStatus(text)
         onDiagnostic(.init(reason: request.reason, attempt: request.attempt, result: "started"))
         execute(request.operation, request.token) { [weak self, weak request] result in
             guard let self, let request, self.active === request else { return }
             self.active = nil
-            if self.generation == request.generation, !request.token.isCancelled {
+            if (self.generation == request.generation || request.operation.writesOnboard),
+                !request.token.isCancelled
+            {
                 let message: String
                 let outcome: String
                 switch result {
@@ -229,6 +252,7 @@ final class AutoOffCoordinator {
                     .init(reason: request.reason, attempt: request.attempt, result: "cancelled"))
             }
             self.drain()
+            if request.operation.writesOnboard { self.onOnboardWriteStateChanged(false) }
         }
     }
 }
